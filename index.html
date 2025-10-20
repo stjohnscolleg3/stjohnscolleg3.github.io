@@ -704,7 +704,36 @@
         if (!firebaseConfig) {
             gameState.init();
         }
+   // Fallback for non-Firebase environment
+        if (typeof db === 'undefined' || db === null) {
+            console.warn("⚠️ Firebase not detected — running in fallback mode (no cloud sync).");
 
+            // Override Firestore save with localStorage fallback
+            gameState.saveResultsToFirestore = async function () {
+                try {
+                    const localKey = `baseline_results_${Date.now()}`;
+                    const payload = {
+                        userId: userId || 'local-user',
+                        timestamp: new Date().toISOString(),
+                        score: this.score,
+                        totalQuestions: questions.length,
+                        details: this.answers,
+                        testVersion: 'SLD_Baseline_v5_50Q_Accessible (Fallback)'
+                    };
+
+                    // Attempt localStorage write
+                    localStorage.setItem(localKey, JSON.stringify(payload));
+                    console.log(`Results saved locally under key: ${localKey}`);
+                } catch (e) {
+                    console.error("Error saving results locally:", e);
+                }
+            };
+
+            // Initialize test immediately if Firebase never ran init
+            if (!gameState.testInProgress) {
+                gameState.init();
+            }
+        }
     </script>
 </body>
 </html>
