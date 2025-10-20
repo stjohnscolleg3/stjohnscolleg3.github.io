@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Accessible Literacy Baseline Test (Starting at Q28)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Use Inter font for maximum readability -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f7; /* Very light background */
+            color: #1a1a1a; /* Very dark text for high contrast */
+            overflow-x: hidden;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+        }
+        /* Custom styling for high contrast buttons and focus states */
+        .option-button {
+            transition: all 0.2s;
+            /* WCAG AAA Contrast (Black text on bright yellow button) */
+            border: 4px solid #1a1a1a;
+            min-height: 100px; /* Large touch target */
+        }
+        .option-button:hover, .option-button:focus {
+            outline: 6px solid #1a1a1a; /* Ultra visible focus ring */
+            outline-offset: 4px;
+            box-shadow: 0 0 0 6px rgba(26, 26, 26, 0.5); /* Shadow for lift */
+            transform: scale(1.02);
+        }
+        .correct {
+            background-color: #4CAF50 !important; /* Green for correct */
+            border-color: #004d40 !important;
+            color: white !important;
+        }
+        .incorrect {
+            background-color: #F44336 !important; /* Red for incorrect */
+            border-color: #b71c1c !important;
+            color: white !important;
+        }
+        .tts-button {
+            /* Accessible dark blue */
+            background-color: #1d4ed8;
+            color: white;
+            transition: all 0.2s;
+        }
+        .tts-button:hover, .tts-button:focus {
+            background-color: #0d38a8;
+            outline: 4px solid #f97316; /* Orange focus for buttons */
+            outline-offset: 4px;
+        }
+        .tts-loading {
+            cursor: wait;
+            background-color: #9ca3af; /* Gray while loading */
+        }
+        .question-text {
+            /* Large, clear text for the main prompt */
+            font-size: 2.25rem;
+            line-height: 1.5;
+            font-weight: 700;
+        }
+        .visual-cue-container {
+            margin-bottom: 1.5rem;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 160px; /* Fixed height for consistent layout */
+            font-size: 100px; /* Large size for Emojis */
+        }
+        .visual-cue-svg {
+            width: 150px;
+            height: 150px;
+            stroke-width: 2px;
+            border: 3px solid #1a1a1a;
+            border-radius: 8px;
+            padding: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <div class="container">
+        <header class="mb-8 text-center border-b-4 border-gray-300 pb-4">
+            <h1 id="test-title" class="text-4xl sm:text-5xl font-extrabold text-blue-800">
+                Accessible Literacy Test
+            </h1>
+            <p class="text-xl mt-2 text-gray-600">Post-19 SLD Baseline Assessment (Starting at Question 28)</p>
+        </header>
+
+        <!-- Main Test Area -->
+        <main id="test-container" class="space-y-8">
+            <!-- Content will be injected here (Start Screen, Questions, Results) -->
+        </main>
+    </div>
+
+    <!-- Firebase SDK Imports for the app ID utility and potential storage -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- GLOBAL SETUP ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, userId = 'anonymous';
+
+        if (firebaseConfig) {
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+           
+            // Log in using custom token or anonymously
+            async function authenticate() {
+                try {
+                    if (initialAuthToken) {
+                        const userCredential = await signInWithCustomToken(auth, initialAuthToken);
+                        userId = userCredential.user.uid;
+                    } else {
+                        const userCredential = await signInAnonymously(auth);
+                        userId = userCredential.user.uid;
+                    }
+                    console.log("Firebase Auth Ready. User ID:", userId);
+                    // Start the test after auth is ready
+                    gameState.init();
+                } catch (error) {
+                    console.error("Firebase Authentication failed:", error);
+                    // Fallback to starting the test without fully secure storage if auth fails
+                    gameState.init();
+                }
+            }
+            authenticate();
+        } else {
+             // If no Firebase config is provided, start the test immediately (no data persistence)
+            gameState.init();
+        }
+
+        // --- TTS API UTILITIES ---
+
+        const TTS_API_MODEL = "gemini-2.5-flash-preview-tts";
+        const API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/";
+        const API_KEY = ""; // Placeholder, key is injected by the environment
+
+        /** Converts a base64 string to an ArrayBuffer. */
+        function base64ToArrayBuffer(base64) {
+            const binaryString = atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        /** Converts 16-bit PCM audio data into a WAV Blob. */
+        function pcmToWav(pcm16, sampleRate) {
+            const numChannels = 1;
+            const bytesPerSample = 2;
+            const blockAlign = numChannels * bytesPerSample;
+            const byteRate = sampleRate * blockAlign;
+            const dataSize = pcm16.length * bytesPerSample;
+
+            const buffer = new ArrayBuffer(44 + dataSize);
+            const view = new DataView(buffer);
+
+            // RIFF chunk
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + dataSize, true);
+            writeString(view, 8, 'WAVE');
+
+            // FMT chunk
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, byteRate, true);
+            view.setUint16(32, blockAlign, true);
+            view.setUint16(34, 16, true);
+
+            // DATA chunk
+            writeString(view, 36, 'data');
+            view.setUint32(40, dataSize, true);
+
+            // Write PCM data
+            let offset = 44;
+            for (let i = 0; i < pcm16.length; i++, offset += 2) {
+                view.setInt16(offset, pcm16[i], true);
+            }
+
+            return new Blob([view], { type: 'audio/wav' });
+        }
+
+        /** Helper function to write a string to a DataView. */
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        /** Calls the TTS API to synthesize speech and plays the audio. */
+        async function speakText(text, buttonId) {
+            const button = document.getElementById(buttonId);
+            if (button) {
+                button.disabled = true;
+                button.classList.add('tts-loading');
+                button.textContent = '🔊 Loading Audio...';
+            }
+
+            const payload = {
+                contents: [{ parts: [{ text: text }] }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } } }
+                },
+                model: TTS_API_MODEL
+            };
+
+            const apiUrl = `${API_BASE_URL}${TTS_API_MODEL}:generateContent?key=${API_KEY}`;
+            let retryCount = 0;
+            const maxRetries = 3;
+            let audioUrl = null;
+
+            while (retryCount < maxRetries) {
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) { throw new Error(`API error: ${response.statusText}`); }
+                    const result = await response.json();
+                    const part = result?.candidates?.[0]?.content?.parts?.[0];
+                    const audioData = part?.inlineData?.data;
+                    const mimeType = part?.inlineData?.mimeType;
+
+                    if (audioData && mimeType && mimeType.startsWith("audio/")) {
+                        const sampleRateMatch = mimeType.match(/rate=(\d+)/);
+                        const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 16000;
+                        const pcmData = base64ToArrayBuffer(audioData);
+                        const pcm16 = new Int16Array(pcmData);
+                        const wavBlob = pcmToWav(pcm16, sampleRate);
+                        audioUrl = URL.createObjectURL(wavBlob);
+                        break;
+                    } else { throw new Error("Invalid audio response format."); }
+                } catch (error) {
+                    retryCount++;
+                    if (retryCount >= maxRetries) {
+                        console.error("TTS failed after maximum retries:", error);
+                        break;
+                    }
+                    const delay = Math.pow(2, retryCount) * 1000;
+                    console.warn(`TTS request failed. Retrying in ${delay / 1000}s...`);
+                    await new Promise(res => setTimeout(res, delay));
+                }
+            }
+
+            if (button) {
+                button.disabled = false;
+                button.classList.remove('tts-loading');
+                button.textContent = '🔊 Read Question';
+            }
+           
+            if (audioUrl) {
+                const audio = new Audio(audioUrl);
+                audio.play();
+                audio.onended = () => URL.revokeObjectURL(audioUrl);
+            }
+        }
+       
+        // --- VISUAL ASSET GENERATION ---
+
+        /**
+         * Returns an inline SVG or Emoji based on the visual cue keyword.
+         * Uses simple, high-contrast graphics.
+         * @param {string} cue - The visual cue keyword.
+         * @returns {string} HTML string for the visual cue.
+         */
+        function getVisualAsset(cue) {
+            let asset = '';
+            let isSvg = false;
+
+            switch (cue) {
+                // Emojis for simple objects/concepts (Questions 1-27 assets)
+                case "APPLE": asset = '🍎'; break;
+                case "MAN": asset = '🧍'; break;
+                case "ZEBRA": asset = '🦓'; break;
+                case "CAKE": asset = '🎂'; break;
+                case "RAT": asset = '🐀'; break;
+                case "BUS": asset = '🚌'; break;
+                case "LOG": asset = '🪵'; break;
+                case "FISH": asset = '🐠'; break;
+                case "FLAG": asset = '🚩'; break;
+                case "HAND": asset = '✋'; break;
+                case "CALENDAR": asset = '📅'; break;
+
+                // FIXES START HERE (Q28 onwards)
+               
+                // Q28 NEW FIX: Literal Table SVG
+                case "TABLE_LITERAL":
+                    isSvg = true;
+                    // Simple table drawing: a rectangle supported by four lines (legs)
+                    asset = `<svg class="visual-cue-svg text-gray-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <rect x="4" y="5" width="16" height="4" rx="1" fill="#fff" stroke="#1a1a1a" stroke-width="2"/>
+                        <line x1="6" y1="9" x2="6" y2="19" stroke="#1a1a1a" stroke-width="2"/>
+                        <line x1="18" y1="9" x2="18" y2="19" stroke="#1a1a1a" stroke-width="2"/>
+                        <line x1="9" y1="19" x2="9" y2="14" stroke="#1a1a1a" stroke-width="2"/>
+                        <line x1="15" y1="19" x2="15" y2="14" stroke="#1a1a1a" stroke-width="2"/>
+                    </svg>`;
+                    break;
+               
+                // Q29 NEW FIX: Shopping Trolley (Supermarket)
+                case "SUPERMARKET_TROLLEY":
+                    asset = '🛒';
+                    break;
+               
+                case "BREAD": asset = '🍞'; break;
+                case "STOP SIGN": asset = '🛑'; break;
+                case "MEN SIGN": asset = '👨'; break;
+                case "FRAGILE": asset = '⚠️'; break;
+                case "OUT OF ORDER": asset = '❌'; break;
+                case "EXIT SIGN": asset = '🚪'; break;
+                case "PRIVATE SIGN": asset = '🚫'; break;
+                case "WOMEN SIGN": asset = '👩'; break;
+                case "DO NOT ENTER": asset = '⛔'; break;
+                case "DOG CHASE BALL": asset = '🐕⚽'; break;
+                case "MILK AND EGGS": asset = '🥛🥚'; break;
+                case "BOOK IN BAG": asset = '📚🎒'; break;
+                case "PERSON COLD": asset = '🥶'; break;
+                case "2 CATS 1 DOG": asset = '🐈🐈🐕'; break;
+               
+                // Q48 Fix: TFL Bus Stop (Bus and Stop sign combo)
+                case "BUS STOP": asset = '🚌🛑'; break;
+               
+                case "WATER PLANTS": asset = '🌱💧'; break;
+               
+                // Q50 Fix: Brown Trousers (Trousers and Shirt emoji to represent the full sentence)
+                case "BROWN TROUSERS": asset = '👖👕'; break;
+
+                // Simple SVGs for abstract concepts/actions/layouts
+                case "PLAN":
+                    isSvg = true;
+                    // Simple checklist SVG
+                    asset = `<svg class="visual-cue-svg text-blue-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2m-9 0a2 2 0 002 2h2m-2-2h10m-6 4l2 2 4-4"/>
+                    </svg>`;
+                    break;
+                case "PUSH DOOR":
+                    isSvg = true;
+                    // Simple push arrow on a door outline
+                    asset = `<svg class="visual-cue-svg text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M11 19l-7-7m0 0l7-7m-7 7h18"/>
+                        <rect x="3" y="2" width="18" height="20" rx="2" ry="2"/>
+                    </svg>`;
+                    break;
+                case "BOX ON CHAIR":
+                    isSvg = true;
+                    // Simple box on a chair/seat SVG
+                    asset = `<svg class="visual-cue-svg text-yellow-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <rect x="8" y="4" width="8" height="8" rx="1" fill="#fff" stroke="#1a1a1a"/>
+                        <rect x="4" y="12" width="16" height="4" rx="1" fill="#fff" stroke="#1a1a1a"/>
+                        <line x1="6" y1="16" x2="6" y2="20" stroke="#1a1a1a"/>
+                        <line x1="18" y1="16" x2="18" y2="20" stroke="#1a1a1a"/>
+                    </svg>`;
+                    break;
+
+                default:
+                    // Fallback text if no specific asset is found
+                    isSvg = false;
+                    asset = `🖼️`;
+                    break;
+            }
+
+            return `<div class="visual-cue-container">${asset}</div>`;
+        }
+
+
+        // --- TEST DATA (50 Questions) ---
+        const questions = [
+            // --- Category 1: Letter/Sound Identification (10 Qs) ---
+            { id: 1, prompt: "Tap the letter that makes the sound /a/ as in the picture.", tts_text: "Tap the letter that makes the sound 'a' as in apple.", options: ["b", "A", "c"], correct: 1, type: "Letter Sound ID", visual_cue: "APPLE" },
+            { id: 2, prompt: "Which letter is the lowercase 't'?", tts_text: "Which letter is the lowercase T?", options: ["T", "l", "t"], correct: 2, type: "Letter ID" },
+            { id: 3, prompt: "Which letter is the uppercase 'P'?", tts_text: "Which letter is the uppercase P?", options: ["p", "Q", "P"], correct: 2, type: "Letter ID" },
+            { id: 4, prompt: "Tap the letter that makes the sound /m/ as in the picture.", tts_text: "Tap the letter that makes the sound 'm' as in Man.", options: ["n", "M", "r"], correct: 1, type: "Letter Sound ID", visual_cue: "MAN" },
+            { id: 5, prompt: "Which letter is the lowercase 'g'?", tts_text: "Which letter is the lowercase G?", options: ["g", "j", "y"], correct: 0, type: "Letter ID" },
+            { id: 6, prompt: "Which letter is the uppercase 'D'?", tts_text: "Which letter is the uppercase D?", options: ["B", "D", "P"], correct: 1, type: "Letter ID" },
+            { id: 7, prompt: "Which letter makes the first sound in the picture?", tts_text: "Which letter makes the first sound in ZEBRA?", options: ["V", "S", "Z"], correct: 2, type: "Initial Sound ID", visual_cue: "ZEBRA" },
+            { id: 8, prompt: "Which letter makes the sound /o/ as in 'Top'?", tts_text: "Which letter makes the sound 'o' as in Top?", options: ["U", "E", "O"], correct: 2, type: "Letter Sound ID" },
+            { id: 9, prompt: "Which letter is the lowercase 'v'?", tts_text: "Which letter is the lowercase V?", options: ["w", "v", "u"], correct: 1, type: "Letter ID" },
+            { id: 10, prompt: "Which letter makes the first sound in the picture?", tts_text: "Which letter makes the first sound in C A K E?", options: ["K", "C", "S"], correct: 1, type: "Initial Sound ID", visual_cue: "CAKE" },
+           
+            // --- Category 2: Sight Word Recognition (10 Qs)
+            { id: 11, prompt: "Tap the common sight word: and.", tts_text: "Tap the common sight word: A N D.", options: ["but", "and", "for"], correct: 1, type: "Sight Word ID" },
+            { id: 12, prompt: "Which button says the word: is?", tts_text: "Which button says the word: I S.", options: ["was", "is", "had"], correct: 1, type: "Sight Word ID" },
+            { id: 13, prompt: "Tap the word: we.", tts_text: "Tap the word: W E.", options: ["me", "she", "we"], correct: 2, type: "Sight Word ID" },
+            { id: 14, prompt: "Which button says the word: at?", tts_text: "Which button says the word: A T.", options: ["to", "it", "at"], correct: 2, type: "Sight Word ID" },
+            { id: 15, prompt: "Tap the common sight word: he.", tts_text: "Tap the common sight word: H E.", options: ["her", "he", "him"], correct: 1, type: "Sight Word ID" },
+            { id: 16, prompt: "Which button says the word: from?", tts_text: "Which button says the word: F R O M.", options: ["for", "from", "farm"], correct: 1, type: "Sight Word ID" },
+            { id: 17, prompt: "Tap the word: like.", tts_text: "Tap the word: L I K E.", options: ["live", "like", "leak"], correct: 1, type: "Sight Word ID" },
+            { id: 18, prompt: "Which button says the word: no?", tts_text: "Which button says the word: N O.", options: ["yes", "on", "no"], correct: 2, type: "Sight Word ID" },
+            { id: 19, prompt: "Tap the common sight word: with.", tts_text: "Tap the common sight word: W I T H.", options: ["what", "with", "when"], correct: 1, type: "Sight Word ID" },
+            { id: 20, prompt: "Which button says the word: that?", tts_text: "Which button says the word: T H A T.", options: ["them", "this", "that"], correct: 2, type: "Sight Word ID" },
+
+            // --- Category 3: Simple Word Decoding (10 Qs)
+            { id: 21, prompt: "Which word matches the picture?", tts_text: "Which word is: R A T (Rat)?", options: ["ride", "rat", "run"], correct: 1, type: "Decoding (CVC)", visual_cue: "RAT" },
+            { id: 22, prompt: "Which word matches the picture?", tts_text: "Which word is: B U S (Bus)?", options: ["bite", "batch", "bus"], correct: 2, type: "Decoding (CVC)", visual_cue: "BUS" },
+            { id: 23, prompt: "Tap the word for the item in the picture.", tts_text: "Tap the word: L O G (Log).", options: ["lock", "leg", "log"], correct: 2, type: "Decoding (CVC)", visual_cue: "LOG" },
+            { id: 24, prompt: "Tap the word that matches the picture.", tts_text: "Tap the word: F I S H (Fish).", options: ["fist", "fish", "fast"], correct: 1, type: "Decoding (Consonant Digraph)", visual_cue: "FISH" },
+            { id: 25, prompt: "Which word matches the picture?", tts_text: "Which word is: F L A G (Flag)?", options: ["flip", "flat", "flag"], correct: 2, type: "Decoding (CCVC)", visual_cue: "FLAG" },
+            { id: 26, prompt: "Tap the word for the picture.", tts_text: "Tap the word: H A N D (Hand).", options: ["have", "hand", "hear"], correct: 1, type: "Decoding (End Blend)", visual_cue: "HAND" },
+            { id: 27, prompt: "Tap the word: w i l l (will).", tts_text: "Tap the word: W I L L (Will).", options: ["walk", "well", "will"], correct: 2, type: "Decoding (Double L)" },
+           
+            // Q28: FIX APPLIED (LITERAL TABLE SVG)
+            { id: 28, prompt: "Which word matches the item in the picture?", tts_text: "Which word is: T A B L E (Table)?", options: ["tab", "top", "table"], correct: 2, type: "Decoding (Vowel Combo)", visual_cue: "TABLE_LITERAL" },
+           
+            // Q29: FIX APPLIED (SUPERMARKET TROLLEY)
+            { id: 29, prompt: "Tap the word for the building in the picture.", tts_text: "Tap the word: S H O P (Shop).", options: ["soap", "stop", "shop"], correct: 2, type: "Decoding (Consonant Digraph)", visual_cue: "SUPERMARKET_TROLLEY" },
+           
+            { id: 30, prompt: "Which word matches the food in the picture.", tts_text: "Which word is: B R E A D (Bread)?", options: ["break", "bridge", "bread"], correct: 2, type: "Decoding (Vowel Digraph)", visual_cue: "BREAD" },
+
+            // --- Category 4: Functional Reading Comprehension (10 Qs) ---
+            { id: 31, prompt: "If you need to stop your car, what word should you look for?", tts_text: "If you need to stop your car, what word should you look for?", options: ["walk", "stop", "drive"], correct: 1, type: "Functional Comp", visual_cue: "STOP SIGN" },
+            { id: 32, prompt: "Tap the word you see on a public toilet door for men.", tts_text: "Tap the word you see on a public toilet door for men.", options: ["women", "boys", "men"], correct: 2, type: "Functional Comp", visual_cue: "MEN SIGN" },
+            { id: 33, prompt: "If a sign says PUSH, what should you do to the door?", tts_text: "If a sign says PUSH, what should you do to the door?", options: ["PULL it", "PUSH it", "OPEN it"], correct: 1, type: "Functional Comp", visual_cue: "PUSH DOOR" },
+            { id: 34, prompt: "Tap the word for the building where you buy food.", tts_text: "Tap the word for the building where you buy food.", options: ["bank", "school", "shop"], correct: 2, type: "Functional Comp", visual_cue: "SUPERMARKET_TROLLEY" },
+            { id: 35, prompt: "If a box has the word FRAGILE, what does it mean?", tts_text: "If a box has the word F R A G I L E, Fragile, what does it mean?", options: ["It is strong", "It is heavy", "It breaks easily"], correct: 2, type: "Functional Comp", visual_cue: "FRAGILE" },
+            { id: 36, prompt: "Tap the word you see when something is not working.", tts_text: "Tap the word you see when something is not working.", options: ["open", "out of order", "in use"], correct: 1, type: "Functional Comp", visual_cue: "OUT OF ORDER" },
+            { id: 37, prompt: "Where might you see the word EXIT?", tts_text: "Where might you see the word E X I T?", options: ["On a bench", "On a wall by a door", "On a chair"], correct: 1, type: "Functional Comp", visual_cue: "EXIT SIGN" },
+            { id: 38, prompt: "What does a sign with the word PRIVATE mean?", tts_text: "What does a sign with the word P R I V A T E mean?", options: ["Anyone can enter", "Only some people can enter", "It is a public space"], correct: 1, type: "Functional Comp", visual_cue: "PRIVATE SIGN" },
+            { id: 39, prompt: "Tap the word you see for a public toilet meant for women.", tts_text: "Tap the word you see for a public toilet meant for women.", options: ["ladies", "gents", "everyone"], correct: 0, type: "Functional Comp", visual_cue: "WOMEN SIGN" },
+            { id: 40, prompt: "What is the purpose of a sign that says DO NOT ENTER?", tts_text: "What is the purpose of a sign that says Do Not Enter?", options: ["To tell you to go in", "To tell you to wait", "To tell you to stay out"], correct: 2, type: "Functional Comp", visual_cue: "DO NOT ENTER" },
+
+            // --- Category 5: Basic Sentence Comprehension (10 Qs) ---
+            { id: 41, prompt: "The blue box is on the red chair. Where is the box?", tts_text: "The blue box is on the red chair. Where is the box?", options: ["Under the chair", "Next to the chair", "On the chair"], correct: 2, type: "Sentence Comp", visual_cue: "BOX ON CHAIR" },
+            { id: 42, prompt: "The dog ran fast to chase the ball. What did the dog chase?", tts_text: "The dog ran fast to chase the ball. What did the dog chase?", options: ["The cat", "The ball", "The man"], correct: 1, type: "Sentence Comp", visual_cue: "DOG CHASE BALL" },
+            { id: 43, prompt: "I will buy milk and eggs at the shop. What am I buying?", tts_text: "I will buy milk and eggs at the shop. What am I buying?", options: ["Toys", "Food", "Clothes"], correct: 1, type: "Sentence Comp", visual_cue: "MILK AND EGGS" },
+            { id: 44, prompt: "Sam put his book in his bag before school. Where did he put the book?", tts_text: "Sam put his book in his bag before school. Where did he put the book?", options: ["On the table", "In his bag", "Under his bed"], correct: 1, type: "Sentence Comp", visual_cue: "BOOK IN BAG" },
+            { id: 45, prompt: "It is cold outside, so I need my coat. Why does the person need a coat?", tts_text: "It is cold outside, so I need my coat. Why does the person need a coat?", options: ["It is raining", "It is cold", "It is sunny"], correct: 1, type: "Sentence Comp", visual_cue: "PERSON COLD" },
+            { id: 46, prompt: "Today is Tuesday. What day was yesterday?", tts_text: "Today is Tuesday. What day was yesterday?", options: ["Wednesday", "Monday", "Sunday"], correct: 1, type: "Sentence Comp", visual_cue: "CALENDAR" },
+            { id: 47, prompt: "My friend has two cats and one dog. How many pets does my friend have?", tts_text: "My friend has two cats and one dog. How many pets does my friend have?", options: ["One", "Two", "Three"], correct: 2, type: "Sentence Comp", visual_cue: "2 CATS 1 DOG" },
+           
+            // Q48: FIX APPLIED (TFL Bus Stop)
+            { id: 48, prompt: "The bus stops here every morning. When does the bus stop here?", tts_text: "The bus stops here every morning. When does the bus stop here?", options: ["Every night", "Every morning", "Every afternoon"], correct: 1, type: "Sentence Comp", visual_cue: "BUS STOP" },
+           
+            { id: 49, prompt: "We must water the plants so they can grow tall. Why must we water the plants?", tts_text: "We must water the plants so they can grow tall. Why must we water the plants?", options: ["To make them smell nice", "To make them grow", "To make them smaller"], correct: 1, type: "Sentence Comp", visual_cue: "WATER PLANTS" },
+           
+            // Q50: FIX APPLIED (BROWN TROUSERS visual cue clarified)
+            { id: 50, prompt: "Dad wore a blue shirt and brown trousers to work. What color were his trousers?", tts_text: "Dad wore a blue shirt and brown trousers to work. What color were his trousers?", options: ["Blue", "Red", "Brown"], correct: 2, type: "Sentence Comp", visual_cue: "BROWN TROUSERS" }
+        ];
+
+        // --- GAME STATE AND LOGIC ---
+
+        const gameState = {
+            currentQuestionIndex: 0,
+            score: 0,
+            answers: [], // Array to store {questionId, selectedIndex, isCorrect}
+            testInProgress: false,
+           
+            init() {
+                this.renderStartScreen();
+            },
+
+            startTest() {
+                this.testInProgress = true;
+                // STARTING AT INDEX 27 (QUESTION 28)
+                this.currentQuestionIndex = 27;
+                this.score = 0;
+                this.answers = [];
+                this.renderQuestion();
+            },
+
+            submitAnswer(selectedIndex) {
+                if (!this.testInProgress) return;
+
+                const currentQ = questions[this.currentQuestionIndex];
+                const isCorrect = selectedIndex === currentQ.correct;
+               
+                if (isCorrect) {
+                    this.score++;
+                }
+
+                this.answers.push({
+                    questionId: currentQ.id,
+                    prompt: currentQ.prompt,
+                    questionType: currentQ.type,
+                    selectedOption: currentQ.options[selectedIndex],
+                    correctOption: currentQ.options[currentQ.correct],
+                    isCorrect: isCorrect
+                });
+               
+                this.showFeedback(selectedIndex, isCorrect, currentQ);
+            },
+           
+            showFeedback(selectedIndex, isCorrect, currentQ) {
+                const container = document.getElementById('test-container');
+                const optionsDiv = container.querySelector('#options-container');
+                const nextButtonContainer = container.querySelector('#next-button-container');
+                const options = optionsDiv.querySelectorAll('button');
+               
+                options.forEach((btn, index) => {
+                    btn.disabled = true; // Disable all options
+                   
+                    if (index === currentQ.correct) {
+                        btn.classList.add('correct');
+                        btn.classList.remove('bg-yellow-300');
+                    } else if (index === selectedIndex) {
+                        btn.classList.add('incorrect');
+                        btn.classList.remove('bg-yellow-300');
+                    }
+                });
+               
+                // Show a clear, non-distracting visual feedback message
+                let feedbackText = isCorrect ? '🎉 Correct! Well done.' : 'Try again next time.';
+               
+                nextButtonContainer.innerHTML = `
+                    <p class="text-3xl font-bold p-4 rounded-xl mb-4 ${isCorrect ? 'text-green-700 bg-green-100 border-green-700' : 'text-red-700 bg-red-100 border-red-700'} border-4 shadow-lg">${feedbackText}</p>
+                    <button id="next-q-button" class="tts-button text-4xl w-full sm:w-1/2 p-6 rounded-2xl font-bold shadow-xl" onclick="gameState.nextQuestion()">
+                        Next Question &rarr;
+                    </button>
+                `;
+               
+                // Ensure the next button is focused for keyboard users
+                document.getElementById('next-q-button').focus();
+            },
+
+            nextQuestion() {
+                this.currentQuestionIndex++;
+                if (this.currentQuestionIndex < questions.length) {
+                    this.renderQuestion();
+                } else {
+                    this.renderResults();
+                }
+            },
+           
+            // --- RENDER FUNCTIONS ---
+           
+            renderStartScreen() {
+                const container = document.getElementById('test-container');
+                container.innerHTML = `
+                    <div class="p-8 bg-white rounded-xl shadow-2xl border-4 border-blue-200 text-center">
+                        <h2 class="text-4xl font-bold text-blue-800 mb-6">Welcome to the Baseline Test</h2>
+                        <p class="text-2xl mb-8 leading-relaxed">
+                            The full test has 50 questions, but we are starting today at **Question 28** (Simple Word Decoding).
+                            You will complete the remaining **23** questions. All questions include a visual cue for context.
+                            You can tap the <strong>'Read Question'</strong> button to hear the question spoken aloud. Take your time!
+                        </p>
+                        <button class="tts-button text-4xl w-full sm:w-2/3 p-6 rounded-2xl font-bold shadow-xl mx-auto" onclick="gameState.startTest()">
+                            Start Test at Question 28 &raquo;
+                        </button>
+                    </div>
+                `;
+            },
+
+            renderQuestion() {
+                const qIndex = this.currentQuestionIndex;
+                const currentQ = questions[qIndex];
+                const container = document.getElementById('test-container');
+               
+                let visualCueHtml = '';
+                if (currentQ.visual_cue) {
+                    visualCueHtml = getVisualAsset(currentQ.visual_cue);
+                }
+
+                container.innerHTML = `
+                    <div class="text-center mb-6">
+                        <p class="text-3xl font-semibold text-gray-700">Question ${qIndex + 1} of ${questions.length}</p>
+                        <p class="text-xl text-gray-500">(${currentQ.type})</p>
+                    </div>
+
+                    <div class="p-8 bg-white rounded-xl shadow-2xl border-4 border-blue-400">
+                       
+                        ${visualCueHtml}
+                       
+                        <!-- Question Prompt -->
+                        <div class="flex flex-col sm:flex-row items-center mb-8 border-b-2 pb-6 border-gray-300">
+                            <h2 class="question-text text-gray-900 mb-4 sm:mb-0 sm:mr-6" aria-live="polite">
+                                ${currentQ.prompt}
+                            </h2>
+                            <button id="tts-q-button"
+                                class="tts-button text-xl px-6 py-3 rounded-xl font-semibold shadow-md flex-shrink-0"
+                                onclick="speakText('${currentQ.tts_text.replace(/'/g, "\\'")}', 'tts-q-button')"
+                                aria-label="Read Question aloud">
+                                🔊 Read Question
+                            </button>
+                        </div>
+
+                        <!-- Options Container -->
+                        <div id="options-container" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            ${currentQ.options.map((option, index) => `
+                                <button class="option-button bg-yellow-300 text-3xl font-extrabold rounded-xl shadow-lg p-6 hover:bg-yellow-400 focus:bg-yellow-400"
+                                        onclick="gameState.submitAnswer(${index})"
+                                        aria-label="Select option: ${option}">
+                                    ${option}
+                                </button>
+                            `).join('')}
+                        </div>
+                       
+                        <!-- Feedback/Next Button Container -->
+                        <div id="next-button-container" class="mt-10 text-center" role="status">
+                            <!-- Feedback and Next button appear here after selection -->
+                        </div>
+                    </div>
+                `;
+                // Automatically read the first question when it loads
+                speakText(currentQ.tts_text, 'tts-q-button');
+            },
+           
+            async renderResults() {
+                this.testInProgress = false;
+                const container = document.getElementById('test-container');
+                const startingQId = 28;
+                const totalQuestions = questions.length - (startingQId - 1); // Questions 28-50 = 23 questions
+                const scoreFrom28 = this.answers.filter(a => a.questionId >= startingQId).length;
+                const percentage = ((scoreFrom28 / totalQuestions) * 100).toFixed(0);
+
+                // Check if Firestore is available before attempting to save
+                if (db) {
+                    await this.saveResultsToFirestore();
+                }
+
+                // Filter answers to show only those attempted from Q28 onwards
+                const attemptedAnswers = this.answers.filter(ans => ans.questionId >= startingQId);
+               
+                const resultRows = attemptedAnswers.map((ans, index) => `
+                    <tr class="border-b border-gray-200 hover:bg-gray-50">
+                        <td class="p-4 text-left font-medium">${ans.questionId}</td>
+                        <td class="p-4 text-left text-lg">${ans.questionType}</td>
+                        <td class="p-4 text-left text-lg ${ans.isCorrect ? 'text-green-600' : 'text-red-600'}">
+                            ${ans.isCorrect ? 'Correct' : 'Incorrect'}
+                        </td>
+                        <td class="p-4 text-left text-lg">${ans.selectedOption}</td>
+                    </tr>
+                `).join('');
+
+                container.innerHTML = `
+                    <div class="p-8 bg-white rounded-xl shadow-2xl border-4 border-green-500 text-center">
+                        <h2 class="text-5xl font-extrabold text-green-700 mb-4">Test Complete!</h2>
+                        <p class="text-4xl font-bold mb-8 text-gray-800">Your Score (Q28-Q50): ${scoreFrom28} / ${totalQuestions}</p>
+                       
+                        <div class="mx-auto w-3/4 bg-gray-200 rounded-full h-8 mb-8">
+                            <div class="bg-green-600 h-8 rounded-full transition-all duration-500" style="width: ${percentage}%">
+                                <span class="text-white text-xl font-bold leading-8 inline-block pl-4">${percentage}%</span>
+                            </div>
+                        </div>
+                       
+                        ${db ? `<p class="text-lg text-gray-600 mb-4">Your results have been saved securely under ID: <span class="font-mono text-blue-700">${userId}</span></p>` : ''}
+                       
+                        <div class="mt-10">
+                            <button class="tts-button text-3xl w-full sm:w-1/2 p-4 rounded-xl font-bold shadow-lg" onclick="gameState.startTest()">
+                                Try Again (Start at Q28) &crarr;
+                            </button>
+                        </div>
+                    </div>
+                   
+                    <div class="p-8 mt-8 bg-white rounded-xl shadow-xl">
+                        <h3 class="text-3xl font-bold text-blue-800 mb-6 border-b pb-3">Detailed Results Overview (Q28 Onwards)</h3>
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full text-left">
+                                <thead class="border-b-2 border-gray-300">
+                                    <tr class="bg-gray-50">
+                                        <th class="p-4 text-lg font-semibold">Q#</th>
+                                        <th class="p-4 text-lg font-semibold">Question Type</th>
+                                        <th class="p-4 text-lg font-semibold">Result</th>
+                                        <th class="p-4 text-lg font-semibold">Selection</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${resultRows}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            },
+
+            async saveResultsToFirestore() {
+                try {
+                    const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${userId}/literacy_tests`), {
+                        userId: userId,
+                        timestamp: serverTimestamp(),
+                        score: this.score,
+                        totalQuestions: questions.length,
+                        details: this.answers,
+                        testVersion: 'SLD_Baseline_v5_50Q_Accessible'
+                    });
+                    console.log("Document successfully written with ID: ", docRef.id);
+                } catch (e) {
+                    console.error("Error adding document to Firestore: ", e);
+                }
+            }
+        };
+
+        // Expose functions globally
+        window.speakText = speakText;
+        window.gameState = gameState;
+
+        // Fallback for non-Firebase environment
+        if (!firebaseConfig) {
+            gameState.init();
+        }
+
+    </script>
+</body>
+</html>
